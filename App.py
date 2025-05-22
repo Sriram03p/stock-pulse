@@ -2,43 +2,58 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import yfinance as yf
 import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
+from datetime import datetime
 from textblob import TextBlob
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
-from statsmodels.tsa.arima.model import ARIMA
-from pmdarima.model_selection import train_test_split
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
-# Function to get stock news
-def get_stock_news(stock_symbol):
-    url = f'https://finance.yahoo.com/quote/{stock_symbol}?p={stock_symbol}'
-    response = requests.get(url)
+# ✅ Your Alpha Vantage API Key
+ALPHA_VANTAGE_API_KEY = 'B5WJBWUZC8XHRVOF'
 
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        headlines = [headline.get_text() for headline in soup.find_all('h3')]
-        headlines = headlines[:10]  # Limit to the first 10 headlines
-        df_news = pd.DataFrame({'Headlines': headlines})
-        return df_news
-    else:
-        st.warning(f"Failed to retrieve data. Status code: {response.status_code}")
-        return pd.DataFrame()
-
-# Function to get historical stock data
-def get_previous_year_data(stock_symbol):
+# ✅ Get stock news from Finviz
+def get_stock_news(symbol):
     try:
-        end_date = datetime.today().strftime('%Y-%m-%d')
-        start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
-        stock_data = yf.download(stock_symbol, start=start_date, end=end_date)
-        return stock_data
+        url = f"https://finviz.com/quote.ashx?t={symbol}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table', class_='fullview-news-outer')
+        rows = table.find_all('tr')[:10]
+        headlines = [row.find_all('td')[1].text.strip() for row in rows]
+        return pd.DataFrame({'Headlines': headlines})
     except Exception as e:
-        st.warning(f"Failed to retrieve historical data for {stock_symbol}. Please check the stock symbol and try again.")
+        st.warning(f"News retrieval failed: {e}")
         return pd.DataFrame()
 
-# Function to analyze sentiment
+# ✅ Get historical stock data (efficient + working)
+import requests
+
+def get_stock_data(symbol):
+    try:
+        api_key = '8a97b0338c804639931f90bff73311cc'
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1day&outputsize=100&apikey={api_key}"
+        response = requests.get(url)
+        data = response.json()
+
+        if 'values' not in data:
+            st.error(f"API error: {data.get('message', 'Unknown error')}")
+            return pd.DataFrame()
+
+        df = pd.DataFrame(data['values'])
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df.set_index('datetime', inplace=True)
+        df = df.rename(columns={'close': 'Close'})
+        df['Close'] = df['Close'].astype(float)
+        df.sort_index(inplace=True)
+        return df[['Close']]
+
+    except Exception as e:
+        st.error(f"Error fetching stock data: {e}")
+        return pd.DataFrame()
+
+
+
+# ✅ Sentiment Analysis
 def analyze_sentiment(text):
     text = ' '.join(text)
     analysis = TextBlob(text)
@@ -49,101 +64,59 @@ def analyze_sentiment(text):
     else:
         return "Neutral"
 
-# Function to get stock sentiment
 def get_stock_sentiment(df):
-    # Calculate sentiment counts
     df['Sentiment'] = df['Headlines'].apply(analyze_sentiment)
-    positive_count = (df['Sentiment'] == 'Positive').sum()
-    negative_count = (df['Sentiment'] == 'Negative').sum()
-    neutral_count = (df['Sentiment'] == 'Neutral').sum()
-
-    # Determine color and message based on sentiment counts
-    if positive_count > negative_count:
-        color = 'green'
-        message = f"The reviews of the stock are looking good!"
-    elif negative_count > positive_count:
-        color = 'red'
-        message = f"The reviews of the stock are looking bad!"
+    pos = (df['Sentiment'] == 'Positive').sum()
+    neg = (df['Sentiment'] == 'Negative').sum()
+    neu = (df['Sentiment'] == 'Neutral').sum()
+    if pos > neg:
+        color, msg = 'green', "The reviews of the stock are looking good!"
+    elif neg > pos:
+        color, msg = 'red', "The reviews of the stock are looking bad!"
     else:
-        color = 'yellow'
-        message = f"The reviews of the stock are looking neutral."
+        color, msg = 'orange', "The reviews of the stock are neutral."
+    return color, msg
 
-    return color, message
-
-# Function to perform demand forecasting using ARIMA
-def arima_demand_forecast(stock_data, forecast_period):
-    # Use closing prices as demand data
-    demand_data = stock_data['Close'].values
-
-    # Train-test split
-    train, test = train_test_split(demand_data, train_size=len(demand_data) - forecast_period)
-
-    # Fit ARIMA model
-    model = ARIMA(train, order=(5, 1, 0))  # You can adjust the order based on your data
-    model_fit = model.fit()
-
-    # Forecast future demand
-    forecast = model_fit.forecast(steps=forecast_period)
-
-    return forecast
-
+# ✅ Forecasting with ETS
 def ets_demand_forecast(stock_data, forecast_period):
     model = ExponentialSmoothing(stock_data['Close'], trend='add', seasonal='add', seasonal_periods=30)
     fit = model.fit()
     forecast = fit.forecast(steps=forecast_period)
     return forecast
 
-# Function to plot demand data and forecast
+# ✅ Plot forecast
 def plot_demand_forecast(stock_data, forecast):
     fig, ax = plt.subplots()
-    ax.plot(stock_data['Close'], label='Closing Prices', color='blue')
+    ax.plot(stock_data['Close'], label='Historical', color='blue')
     ax.plot(pd.date_range(start=stock_data.index[-1], periods=len(forecast) + 1, freq='B')[1:], forecast, label='Forecast', color='red')
-    ax.set_xlabel('Date')
-    ax.set_ylabel('Closing Price')
-    ax.set_title('Stock Price Forecasting using ETS')
+    ax.set_title("Stock Price Forecast")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Price (USD)")
     ax.legend()
     st.pyplot(fig)
 
-# Streamlit app
+# ✅ Main Streamlit app
 def main():
-    st.title("Stock Analysis and Forecasting App")
-    st.write("Enter the stock symbol:")
+    st.title("📈 Stock Analysis & Forecast App")
+    stock_symbol = st.text_input("Enter Stock Symbol (e.g., AAPL, MSFT)").upper()
 
-    # Get user input for the stock symbol
-    stock_symbol = st.text_input("Stock Symbol").upper()
-
-    if st.button("Submit"):
-        # Display news headlines
-        st.write("News Headlines for", stock_symbol)
+    if st.button("Analyze") and stock_symbol:
         df_news = get_stock_news(stock_symbol)
-        st.write(df_news)
+        if not df_news.empty:
+            st.subheader("📰 News Headlines")
+            st.dataframe(df_news)
+            color, message = get_stock_sentiment(df_news)
+            st.markdown(f'<p style="color:{color}">{message}</p>', unsafe_allow_html=True)
 
-        # Analyze sentiment
-        color, message = get_stock_sentiment(df_news)
-        st.markdown(f'<p style="color:{color}">{message}</p>', unsafe_allow_html=True)
-
-        # Get historical stock data
-        st.write(f"{stock_symbol} Stock Price Trend (Previous Year)")
-        stock_data = get_previous_year_data(stock_symbol)
+        st.subheader("📊 Historical Stock Data")
+        stock_data = get_stock_data(stock_symbol)
         if not stock_data.empty:
-            # Plot the stock trend
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(stock_data['Close'], label=f'{stock_symbol} Closing Price')
-            ax.set_title(f'{stock_symbol} Stock Price Trend (Previous Year)')
-            ax.set_xlabel('Date')
-            ax.set_ylabel('Closing Price (USD)')
-            ax.legend()
-            ax.grid(True)
-            st.pyplot(fig)
+            st.line_chart(stock_data['Close'])
 
-            # Perform stock price forecasting
-            forecast_period = st.number_input('Enter the forecast period (in days):', min_value=1, max_value=365, value=90)
-            forecast = ets_demand_forecast(stock_data, forecast_period)
-
-            # Plot the demand forecast
+            st.subheader("🔮 Forecast Stock Price")
+            forecast_days = st.slider("Forecast Period (days)", 10, 180, 60)
+            forecast = ets_demand_forecast(stock_data, forecast_days)
             plot_demand_forecast(stock_data, forecast)
-        else:
-            st.warning(f"No historical data found for {stock_symbol}. Please check the stock symbol and try again.")
 
 if __name__ == "__main__":
     main()
